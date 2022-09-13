@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Create Regional Pool for Account"
+Metadata:
+  "AWS::CloudFormation::Interface":
+    ParameterGroups:
+      - Label:
+          default: Account Details
+        Parameters:
+          - AccountId
+          - Region
+      - Label:
+          default: Workload Details
+        Parameters:
+          - WorkloadType
+          - WorkloadUniqueId
+      - Label:
+          default: Lambda Automation
+        Parameters:
+          - S3BucketParam
+          - S3KeyParam
+Parameters:
+  AccountId:
+    Type: String
+    Description: Requestor Account Id
+    Default: 172489758104
+  Region:
+    Type: String
+    Description: Requestor Account Region
+    Default: us-east-1
+    AllowedValues:
+      - us-east-1
+      - eu-north-1
+      - ca-central-1
+      - ap-south-1
+      - ap-southeast-2
+      - eu-west-1
+      - eu-west-3
+      - us-east-2
+      - us-west-2
+      - ap-northeast-2
+      - ap-southeast-1
+      - eu-central-1
+      - ap-northeast-1
+      - sa-east-1
+      - eu-west-2
+  WorkloadType:
+    Type: String
+    Description: What workload type is the VPC used for?
+    Default: Dev
+    AllowedValues:
+      - Dev
+      - Prod
+  WorkloadUniqueId:
+    Type: String
+    Description: Unique Identifier for Workload
+  S3BucketParam:
+    Type: String
+    Description: S3 Bucket for Lambda automation
+    Default: 'sh-network-dev-bucket1'
+  S3KeyParam:
+    Type: String
+    Description: S3 Key for Lambda automation
+    Default: 'create_account_pool.zip'
+Resources:
+  PoolAllocatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: '/'
+      RoleName: !Sub '${AWS::StackName}-PoolAllocatorRole-${WorkloadUniqueId}'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonEC2FullAccess'
+      Policies:
+        - PolicyName: !Sub '${AWS::StackName}-CW-Min'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*:log-stream:*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:CreateLogGroup'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+        - PolicyName: !Sub '${AWS::StackName}-RAM-Min'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ram:TagResource'
+                  - 'ram:UntagResource'
+                  - 'ram:DeleteResourceShare'
+                Resource:
+                  - !Sub 'arn:aws:ram:${AWS::Region}:${AWS::AccountId}:resource-share/*'
+              - Effect: Allow
+                Action:
+                  - 'ram:CreateResourceShare'
+                  - 'ram:GetResourceShares'
+                Resource:
+                  - '*'
+      Tags:
+        - Key: Owner
+          Value: 'rajasekhar.durvasula'
+  PoolAllocatorLambda:
+    Type: AWS::Lambda::Function
+    UpdateReplacePolicy: Delete
+    DependsOn:
+      - PoolAllocatorRole
+    Properties:
+      FunctionName: !Sub '${AccountId}-PoolAllocator-${WorkloadUniqueId}'
+      Handler: 'create_account_pool.lambda_handler'
+      Role: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${PoolAllocatorRole}'
+      Code:
+        S3Bucket: !Ref S3BucketParam
+        S3Key: !Ref S3KeyParam
+      Runtime: python3.9
+      MemorySize: 256
+      Timeout: 900
+      Environment:
+        Variables:
+          log_level: INFO
+      Tags:
+        - Key: Owner
+          Value: 'rajasekhar.durvasula'
+  SetupAccountPool:
+    Type: Custom::SetupAccountPool
+    DependsOn:
+      - PoolAllocatorRole
+      - PoolAllocatorLambda
+    Properties:
+      ServiceToken: !GetAtt PoolAllocatorLambda.Arn
+      member_region: !Ref Region
+      member_account: !Ref AccountId
+      workload_type: !Ref WorkloadType
+      workload_id: !Ref WorkloadUniqueId
+      netmask_length: 24
